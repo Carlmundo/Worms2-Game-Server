@@ -136,7 +136,11 @@ namespace Syroot.Worms.Worms2.GameServer
                         Span<byte> dataBytes = stackalloc byte[dataLength];
                         if (!reader.TryCopyTo(dataBytes)) break;
                         reader.Advance(dataLength);
-                        packet.Data = Encodings.Windows1252.GetString(dataBytes);
+                        string dataString = Encodings.Windows1252.GetString(dataBytes);
+                        if (dataString.StartsWith($"GRP") || dataString.StartsWith($"PRV"))
+                            packet.Data = dataString;
+                        else
+                            packet.Data = Encodings.Windows1252.GetZeroTerminatedString(dataBytes);
                         consumedTo = reader.Position;
                         goto case PacketField.Error;
 
