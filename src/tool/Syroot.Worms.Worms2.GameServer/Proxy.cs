@@ -1,8 +1,6 @@
-﻿using System;
-using System.Drawing;
+﻿using System.Drawing;
 using System.Net;
 using System.Net.Sockets;
-using System.Threading;
 using System.Threading.Tasks;
 using Syroot.ColoredConsole;
 
@@ -15,15 +13,15 @@ namespace Syroot.Worms.Worms2.GameServer
     {
         // ---- METHODS (INTERNAL) -------------------------------------------------------------------------------------
 
-        internal static async Task Run(IPEndPoint localEndPoint, CancellationToken ct = default)
+        internal static void Run(IPEndPoint localEndPoint)
         {
             // Start listening for clients to intercept.
             TcpListener listener = new TcpListener(localEndPoint);
             listener.Start();
-            Log(Color.Orange, $"Proxy listening under {localEndPoint}...");
+            ColorConsole.WriteLine(Color.Orange, $"Proxy listening under {localEndPoint}...");
 
             TcpClient? client;
-            while ((client = await listener.AcceptTcpClientAsync(ct)) != null)
+            while ((client = listener.AcceptTcpClient()) != null)
             {
                 // Connect to server.
                 TcpClient server = new TcpClient();
@@ -31,39 +29,25 @@ namespace Syroot.Worms.Worms2.GameServer
 
                 PacketConnection clientConnection = new PacketConnection(client);
                 PacketConnection serverConnection = new PacketConnection(server);
-                Log(Color.Green, $"{clientConnection.RemoteEndPoint} connected.");
+                ColorConsole.WriteLine(Color.Green, $"{clientConnection.RemoteEndPoint} connected.");
 
-                CancellationTokenSource disconnectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                _ = Task.WhenAny(
-                    Forward(clientConnection, serverConnection, true, disconnectCts.Token),
-                    Forward(serverConnection, clientConnection, false, disconnectCts.Token))
-                    .ContinueWith((antecedent) => disconnectCts.Cancel());
+                Task.Run(() => Forward(clientConnection, serverConnection, true));
+                Task.Run(() => Forward(serverConnection, clientConnection, false));
             }
         }
 
         // ---- METHODS (PRIVATE) --------------------------------------------------------------------------------------
 
-        private static void Log(Color color, string message)
-            => ColorConsole.WriteLine(color, $"{DateTime.Now:HH:mm:ss} {message}");
-
-        private static async Task Forward(PacketConnection from, PacketConnection to, bool fromClient,
-            CancellationToken ct)
+        private static void Forward(PacketConnection from, PacketConnection to, bool fromClient)
         {
-            string prefix = fromClient
-                ? $"{from.RemoteEndPoint} >> {to.RemoteEndPoint}"
-                : $"{to.RemoteEndPoint} << {from.RemoteEndPoint}";
-            try
+            while (true)
             {
-                while (true)
-                {
-                    Packet packet = await from.Read(ct);
-                    Log(fromClient ? Color.Cyan : Color.Magenta, $"{prefix} {packet}");
-                    await to.Write(packet, ct);
-                }
-            }
-            catch (Exception ex)
-            {
-                Log(Color.Red, $"{prefix} closed. {ex.Message}");
+                Packet packet = from.Receive();
+                if (fromClient)
+                    ColorConsole.WriteLine(Color.Cyan, $"{from.RemoteEndPoint} >> {to.RemoteEndPoint} | {packet}");
+                else
+                    ColorConsole.WriteLine(Color.Magenta, $"{to.RemoteEndPoint} << {from.RemoteEndPoint} | {packet}");
+                to.Send(packet);
             }
         }
     }

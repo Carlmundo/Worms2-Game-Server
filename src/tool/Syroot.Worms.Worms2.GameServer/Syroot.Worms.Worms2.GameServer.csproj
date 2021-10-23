@@ -2,19 +2,17 @@
   
   <!-- Metadata -->
   <PropertyGroup>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ApplicationIcon>..\..\..\res\icon.ico</ApplicationIcon>
     <AssemblyName>w2server</AssemblyName>
     <Authors>Syroot</Authors>
     <Copyright>(c) Syroot, licensed under MIT</Copyright>
     <Description>Worms 2 Game Server</Description>
-    <Version>1.1.1</Version>
+    <Version>1.0.1</Version>
   </PropertyGroup>
 
   <!-- References -->
   <ItemGroup>
     <PackageReference Include="Syroot.ColoredConsole" Version="1.0.1" />
-    <PackageReference Include="System.IO.Pipelines" Version="4.7.2" />
     <PackageReference Include="System.Text.Encoding.CodePages" Version="4.7.1" />
     <ProjectReference Include="..\..\library\Syroot.Worms\Syroot.Worms.csproj" />
   </ItemGroup>

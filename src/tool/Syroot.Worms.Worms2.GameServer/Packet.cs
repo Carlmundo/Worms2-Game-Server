@@ -1,4 +1,8 @@
-﻿using System.Text;
+﻿using System;
+using System.IO;
+using System.Text;
+using Syroot.BinaryData;
+using Syroot.Worms.IO;
 
 namespace Syroot.Worms.Worms2.GameServer
 {
@@ -7,6 +11,10 @@ namespace Syroot.Worms.Worms2.GameServer
     /// </summary>
     internal class Packet
     {
+        // ---- CONSTANTS ----------------------------------------------------------------------------------------------
+
+        private const int _maxDataSize = 0x1000;
+
         // ---- CONSTRUCTORS & DESTRUCTOR ------------------------------------------------------------------------------
 
         /// <summary>
@@ -51,57 +59,57 @@ namespace Syroot.Worms.Worms2.GameServer
         /// <summary>
         /// Gets or sets <see cref="PacketCode"/> describing the action of the packet.
         /// </summary>
-        internal PacketCode Code;
+        internal PacketCode Code { get; set; }
 
         /// <summary>
         /// Gets or sets a parameter for the action.
         /// </summary>
-        internal int? Value0;
+        internal int? Value0 { get; set; }
 
         /// <summary>
         /// Gets or sets a parameter for the action.
         /// </summary>
-        internal int? Value1;
+        internal int? Value1 { get; set; }
 
         /// <summary>
         /// Gets or sets a parameter for the action.
         /// </summary>
-        internal int? Value2;
+        internal int? Value2 { get; set; }
 
         /// <summary>
         /// Gets or sets a parameter for the action.
         /// </summary>
-        internal int? Value3;
+        internal int? Value3 { get; set; }
 
         /// <summary>
         /// Gets or sets a parameter for the action.
         /// </summary>
-        internal int? Value4;
+        internal int? Value4 { get; set; }
 
         /// <summary>
         /// Gets or sets a parameter for the action.
         /// </summary>
-        internal int? Value10;
+        internal int? Value10 { get; set; }
 
         /// <summary>
         /// Gets or sets a textual parameter for the action.
         /// </summary>
-        internal string? Data;
+        internal string? Data { get; set; }
 
         /// <summary>
         /// Gets or sets an error code returned from the server after executing the action.
         /// </summary>
-        internal int? Error;
+        internal int? Error { get; set; }
 
         /// <summary>
         /// Gets or sets a named parameter for the action.
         /// </summary>
-        internal string? Name;
+        internal string? Name { get; set; }
 
         /// <summary>
         /// Gets or sets a <see cref="SessionInfo"/> for the action.
         /// </summary>
-        internal SessionInfo? Session;
+        internal SessionInfo? Session { get; set; }
 
         // ---- METHODS (PUBLIC) ---------------------------------------------------------------------------------------
 
@@ -109,6 +117,7 @@ namespace Syroot.Worms.Worms2.GameServer
         public override string ToString()
         {
             StringBuilder sb = new StringBuilder();
+
             sb.AppendLine($"{Code:D} {Code}");
             if (Value0.HasValue) sb.AppendLine($"  {nameof(Value0),7}: {Value0:X8}");
             if (Value1.HasValue) sb.AppendLine($"  {nameof(Value1),7}: {Value1:X8}");
@@ -120,7 +129,98 @@ namespace Syroot.Worms.Worms2.GameServer
             if (Error.HasValue) sb.AppendLine($"  {nameof(Error),7}: {Error:X8}");
             if (Name != null) sb.AppendLine($"  {nameof(Name),7}: {Name}");
             if (Session.HasValue) sb.AppendLine($"  {nameof(Session),7}: {Session}");
+
             return sb.ToString().TrimEnd();
+        }
+
+        // ---- METHODS (INTERNAL) -------------------------------------------------------------------------------------
+
+        /// <summary>
+        /// Blocks and reads the packet data from the given <paramref name="stream"/>.
+        /// </summary>
+        /// <param name="stream">The <see cref="Stream"/> to read the packet data from.</param>
+        internal void Receive(Stream stream)
+        {
+            int dataLength = 0;
+            Code = stream.ReadEnum<PacketCode>(true);
+            Flags flags = stream.ReadEnum<Flags>(true);
+            if (flags.HasFlag(Flags.Value0)) Value0 = stream.ReadInt32();
+            if (flags.HasFlag(Flags.Value1)) Value1 = stream.ReadInt32();
+            if (flags.HasFlag(Flags.Value2)) Value2 = stream.ReadInt32();
+            if (flags.HasFlag(Flags.Value3)) Value3 = stream.ReadInt32();
+            if (flags.HasFlag(Flags.Value4)) Value4 = stream.ReadInt32();
+            if (flags.HasFlag(Flags.Value10)) Value10 = stream.ReadInt32();
+            if (flags.HasFlag(Flags.DataLength)) dataLength = stream.ReadInt32();
+            if (flags.HasFlag(Flags.Data) && dataLength >= 0 && dataLength <= _maxDataSize)
+                Data = stream.ReadFixedString(dataLength, Encodings.Windows1252);
+            if (flags.HasFlag(Flags.Error)) Error = stream.ReadInt32();
+            if (flags.HasFlag(Flags.Name)) Name = stream.ReadFixedString(20, Encodings.Windows1252);
+            if (flags.HasFlag(Flags.Session)) Session = stream.ReadStruct<SessionInfo>();
+        }
+
+        /// <summary>
+        /// Blocks and writes the packet data to the given <paramref name="stream"/>.
+        /// </summary>
+        /// <param name="stream">The <see cref="Stream"/> to write the packet data to.</param>
+        internal void Send(Stream stream)
+        {
+            stream.WriteEnum(Code);
+            stream.WriteEnum(GetFlags());
+            if (Value0.HasValue) stream.WriteInt32(Value0.Value);
+            if (Value1.HasValue) stream.WriteInt32(Value1.Value);
+            if (Value2.HasValue) stream.WriteInt32(Value2.Value);
+            if (Value3.HasValue) stream.WriteInt32(Value3.Value);
+            if (Value4.HasValue) stream.WriteInt32(Value4.Value);
+            if (Value10.HasValue) stream.WriteInt32(Value10.Value);
+            if (Data != null)
+            {
+                stream.WriteInt32(Data.Length + 1);
+                stream.WriteFixedString(Data, Data.Length + 1, Encodings.Windows1252);
+            }
+            if (Error.HasValue) stream.WriteInt32(Error.Value);
+            if (Name != null) stream.WriteFixedString(Name, 20, Encodings.Windows1252);
+            if (Session.HasValue) stream.WriteStruct(Session.Value);
+        }
+
+        // ---- METHODS (PRIVATE) --------------------------------------------------------------------------------------
+
+        private Flags GetFlags()
+        {
+            Flags flags = Flags.None;
+            if (Value0.HasValue) flags |= Flags.Value0;
+            if (Value1.HasValue) flags |= Flags.Value1;
+            if (Value2.HasValue) flags |= Flags.Value2;
+            if (Value3.HasValue) flags |= Flags.Value3;
+            if (Value4.HasValue) flags |= Flags.Value4;
+            if (Value10.HasValue) flags |= Flags.Value10;
+            if (Data != null)
+            {
+                flags |= Flags.DataLength;
+                flags |= Flags.Data;
+            }
+            if (Error.HasValue) flags |= Flags.Error;
+            if (Name != null) flags |= Flags.Name;
+            if (Session.HasValue) flags |= Flags.Session;
+            return flags;
+        }
+
+        // ---- CLASSES, STRUCTS & ENUMS -------------------------------------------------------------------------------
+
+        [Flags]
+        private enum Flags : int
+        {
+            None,
+            Value0 = 1 << 0,
+            Value1 = 1 << 1,
+            Value2 = 1 << 2,
+            Value3 = 1 << 3,
+            Value4 = 1 << 4,
+            Value10 = 1 << 10,
+            DataLength = 1 << 5,
+            Data = 1 << 6,
+            Error = 1 << 7,
+            Name = 1 << 8,
+            Session = 1 << 9
         }
     }
 }

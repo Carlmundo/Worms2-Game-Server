@@ -2,7 +2,7 @@
   "profiles": {
     "Syroot.Worms.Worms2.GameServer": {
       "commandName": "Project",
-      "commandLineArgs": "17001"
+      "commandLineArgs": "127.0.0.1:17002"
     }
   }
 }

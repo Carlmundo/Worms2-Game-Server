@@ -1,9 +1,17 @@
-﻿#if NETSTANDARD2_0
-namespace System.Text
+﻿using System;
+using System.Text;
+
+namespace Syroot.Worms.IO
 {
-    public static class EncodingShims
+    /// <summary>
+    /// Represents extension methods for <see cref="Encoding"/> instances.
+    /// </summary>
+    public static class EncodingExtensions
     {
         // ---- METHODS (PUBLIC) ---------------------------------------------------------------------------------------
+
+#if NETSTANDARD2_0
+        // ---- Backports ----
 
         public unsafe static int GetBytes(this Encoding encoding, ReadOnlySpan<char> chars, Span<byte> bytes)
         {
@@ -17,6 +25,6 @@ namespace System.Text
             fixed (byte* pBytes = bytes)
                 return encoding.GetString(pBytes, bytes.Length);
         }
+#endif
     }
 }
-#endif
