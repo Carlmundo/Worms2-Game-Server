@@ -1,0 +1,39 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  
+  <!-- Metadata -->
+  <PropertyGroup>
+    <Authors>Syroot</Authors>
+    <Copyright>(c) Syroot, licensed under MIT</Copyright>
+    <RepositoryType>git</RepositoryType>
+    <RepositoryUrl>https://gitlab.com/Syroot/Worms</RepositoryUrl>
+    <PackageIcon>icon.png</PackageIcon>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://gitlab.com/Syroot/Worms</PackageProjectUrl>
+    <PackageTags>team17;worms</PackageTags>
+    <RepositoryUrl>https://gitlab.com/Syroot/Worms</RepositoryUrl>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)..\res\icon.png" Pack="true" PackagePath="" />
+  </ItemGroup>
+
+  <!-- Compilation -->
+  <PropertyGroup>
+    <IncludeSymbols>true</IncludeSymbols>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <TargetFrameworks>netstandard2.0;netstandard2.1</TargetFrameworks>
+  </PropertyGroup>
+
+  <!-- Output -->
+  <PropertyGroup>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <OutputPath>$(MSBuildThisFileDirectory)..\bin\$(MSBuildProjectName)</OutputPath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+  </PropertyGroup>
+  
+</Project>
