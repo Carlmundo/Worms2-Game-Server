@@ -419,9 +419,8 @@ namespace Syroot.Worms.Worms2.GameServer
                 SendPacket(connection, new Packet(PacketCode.ChatRoom,
                     value0: fromUser.ID,
                     value3: fromUser.RoomID,
-                    data: $"GRP:Cannot host your game. Please use the Worms 2 Memory Changer to set your IP "
-                        + $"{fromUser.Connection.RemoteEndPoint.Address}. For more information, visit "
-                        + "worms2d.info/Worms_2_Memory_Changer"));
+                    data: $"GRP:Cannot host your game. Please use Worms 2 Plus and check your configuration. More information at "
+                + "worms2.highog.com"));
             }
         }
 
