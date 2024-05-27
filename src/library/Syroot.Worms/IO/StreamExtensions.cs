@@ -3,6 +3,7 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using Syroot.Worms.Core;
 
 namespace Syroot.Worms.IO
 {
@@ -21,13 +22,12 @@ namespace Syroot.Worms.IO
         /// <param name="encoding">The 1-byte <see cref="Encoding"/> to use or <see langword="null"/> to use
         /// <see cref="Encoding.ASCII"/>.</param>
         /// <returns>The read string.</returns>
-        public static unsafe string ReadFixedString(this Stream stream, int length, Encoding? encoding = null)
+        public static string ReadFixedString(this Stream stream, int length, Encoding? encoding = null)
         {
             // Ensure to not try to decode any bytes after the 0 termination.
             Span<byte> bytes = stackalloc byte[length];
             stream.Read(bytes);
-            for (length = 0; length < bytes.Length && bytes[length] != 0; length++) ;
-            return (encoding ?? Encoding.ASCII).GetString(bytes.Slice(0, length));
+            return (encoding ?? Encoding.ASCII).GetZeroTerminatedString(bytes);
         }
 
         /// <summary>
@@ -63,8 +63,7 @@ namespace Syroot.Worms.IO
         public static void WriteFixedString(this Stream stream, string value, int length, Encoding? encoding = null)
         {
             Span<byte> bytes = stackalloc byte[length];
-            if (value != null)
-                (encoding ?? Encoding.ASCII).GetBytes(value.AsSpan(), bytes);
+            (encoding ?? Encoding.ASCII).GetBytes(value.AsSpan(), bytes);
             stream.Write(bytes);
         }
 
@@ -117,42 +116,5 @@ namespace Syroot.Worms.IO
         /// <param name="stream">The <see cref="Stream"/> instance to write with.</param>
         /// <param name="value">The instance to write into the current stream.</param>
         public static void Save<T>(this Stream stream, T value) where T : ISaveable => value.Save(stream);
-
-#if NETSTANDARD2_0
-        // ---- Backports ----
-
-        /// <summary>
-        /// When overridden in a derived class, reads a sequence of bytes from the current stream and advances the
-        /// position within the stream by the number of bytes read.
-        /// </summary>
-        /// <param name="stream">The <see cref="Stream"/> instance to write with.</param>
-        /// <param name="buffer">A region of memory. When this method returns, the contents of this region are replaced
-        /// by the bytes read from the current source.</param>
-        /// <returns>The total number of bytes read into the buffer. This can be less than the number of bytes allocated
-        /// in the buffer if that many bytes are not currently available, or zero (0) if the end of the stream has been
-        /// reached.</returns>
-        /// <remarks>
-        /// This .NET Standard 2.0 backport requires a temporary copy.
-        /// </remarks>
-        public static int Read(this Stream stream, Span<byte> buffer)
-        {
-            byte[] bytes = new byte[buffer.Length];
-            int bytesRead = stream.Read(bytes);
-            bytes.AsSpan(0, bytesRead).CopyTo(buffer);
-            return bytesRead;
-        }
-
-        /// <summary>
-        /// When overridden in a derived class, writes a sequence of bytes to the current stream and advances the
-        /// current position within this stream by the number of bytes written.
-        /// </summary>
-        /// <param name="stream">The <see cref="Stream"/> instance.</param>
-        /// <param name="value">A region of memory. This method copies the contents of this region to the current
-        /// stream.</param>
-        /// <remarks>
-        /// This .NET Standard 2.0 backport requires a temporary copy.
-        /// </remarks>
-        public static void Write(this Stream stream, ReadOnlySpan<byte> value) => stream.Write(value.ToArray());
-#endif
     }
 }

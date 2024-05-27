@@ -1,10 +1,11 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using Syroot.ColoredConsole;
 
@@ -15,34 +16,43 @@ namespace Syroot.Worms.Worms2.GameServer
     /// </summary>
     internal class Server
     {
+        // ---- CONSTANTS ----------------------------------------------------------------------------------------------
+
+        private const int _authorizedTimeout = 10 * 60 * 1000;
+        private const int _unauthorizedTimeout = 3 * 1000;
+
         // ---- FIELDS -------------------------------------------------------------------------------------------------
 
         private int _lastID = 0x1000; // start at an offset to prevent bugs with chat
         private readonly List<User> _users = new List<User>();
         private readonly List<Room> _rooms = new List<Room>();
         private readonly List<Game> _games = new List<Game>();
-        private readonly BlockingCollection<Action> _jobs = new BlockingCollection<Action>();
-        private readonly Dictionary<PacketCode, Action<PacketConnection, Packet>> _packetHandlers;
+        private readonly Channel<Func<ValueTask>> _jobs;
+        private readonly Dictionary<PacketCode, PacketHandler> _packetHandlers;
 
         // ---- CONSTRUCTORS & DESTRUCTOR ------------------------------------------------------------------------------
 
         /// <summary>
         /// Initializes a new instance of the <see cref="Server"/> class.
         /// </summary>
-        internal Server() => _packetHandlers = new Dictionary<PacketCode, Action<PacketConnection, Packet>>
+        internal Server()
         {
-            [PacketCode.ListRooms] = OnListRooms,
-            [PacketCode.ListUsers] = OnListUsers,
-            [PacketCode.ListGames] = OnListGames,
-            [PacketCode.Login] = OnLogin,
-            [PacketCode.CreateRoom] = OnCreateRoom,
-            [PacketCode.Join] = OnJoin,
-            [PacketCode.Leave] = OnLeave,
-            [PacketCode.Close] = OnClose,
-            [PacketCode.CreateGame] = OnCreateGame,
-            [PacketCode.ChatRoom] = OnChatRoom,
-            [PacketCode.ConnectGame] = OnConnectGame,
-        };
+            _jobs = Channel.CreateUnbounded<Func<ValueTask>>(new UnboundedChannelOptions { SingleReader = true });
+            _packetHandlers = new Dictionary<PacketCode, PacketHandler>
+            {
+                [PacketCode.ListRooms] = OnListRooms,
+                [PacketCode.ListUsers] = OnListUsers,
+                [PacketCode.ListGames] = OnListGames,
+                [PacketCode.Login] = OnLogin,
+                [PacketCode.CreateRoom] = OnCreateRoom,
+                [PacketCode.Join] = OnJoin,
+                [PacketCode.Leave] = OnLeave,
+                [PacketCode.Close] = OnClose,
+                [PacketCode.CreateGame] = OnCreateGame,
+                [PacketCode.ChatRoom] = OnChatRoom,
+                [PacketCode.ConnectGame] = OnConnectGame,
+            };
+        }
 
         // ---- METHODS (INTERNAL) -------------------------------------------------------------------------------------
 
@@ -50,28 +60,31 @@ namespace Syroot.Worms.Worms2.GameServer
         /// Begins listening for new clients connecting to the given <paramref name="localEndPoint"/> and dispatches
         /// them into their own threads.
         /// </summary>
-        internal void Run(IPEndPoint localEndPoint)
+        internal async Task Run(IPEndPoint localEndPoint, CancellationToken ct = default)
         {
             // Begin handling any queued jobs.
-            Task.Run(() => HandleJobs());
-            // Begin listening for new connections. Currently synchronous and blocking.
-            HandleConnections(localEndPoint);
+            _ = HandleJobs(ct);
+            // Begin listening for new connections.
+            await HandleConnections(localEndPoint, ct);
         }
 
         // ---- METHODS (PRIVATE) --------------------------------------------------------------------------------------
 
-        private static void SendPacket(PacketConnection connection, Packet packet)
-        {
-            LogPacket(connection, packet, false);
-            connection.Send(packet);
-        }
+        private static void Log(Color color, string message)
+            => ColorConsole.WriteLine(color, $"{DateTime.Now:HH:mm:ss} {message}");
 
         private static void LogPacket(PacketConnection connection, Packet packet, bool fromClient)
         {
             if (fromClient)
-                ColorConsole.WriteLine(Color.Cyan, $"{DateTime.Now:HH:mm:ss} {connection.RemoteEndPoint} >> {packet}");
+                Log(Color.Cyan, $"{connection.RemoteEndPoint} >> {packet}");
             else
-                ColorConsole.WriteLine(Color.Magenta, $"{DateTime.Now:HH:mm:ss} {connection.RemoteEndPoint} << {packet}");
+                Log(Color.Magenta, $"{connection.RemoteEndPoint} << {packet}");
+        }
+
+        private static async ValueTask SendPacket(PacketConnection connection, CancellationToken ct, Packet packet)
+        {
+            LogPacket(connection, packet, false);
+            await connection.Write(packet, ct);
         }
 
         private User? GetUser(PacketConnection connection)
@@ -82,53 +95,62 @@ namespace Syroot.Worms.Worms2.GameServer
             return null;
         }
 
-        private void HandleJobs()
+        private async ValueTask HandleJobs(CancellationToken ct)
         {
-            foreach (Action job in _jobs.GetConsumingEnumerable())
-                job();
+            await foreach (Func<ValueTask> job in _jobs.Reader.ReadAllAsync(ct))
+                await job();
         }
 
-        private void HandleConnections(IPEndPoint localEndPoint)
+        private async ValueTask HandleConnections(IPEndPoint localEndPoint, CancellationToken ct)
         {
             // Start a new listener for new incoming connections.
             TcpListener listener = new TcpListener(localEndPoint);
             listener.Start();
-            ColorConsole.WriteLine(Color.Orange, $"Server listening under {listener.LocalEndpoint}...");
+            Log(Color.Orange, $"Server listening under {listener.LocalEndpoint}...");
 
             // Dispatch each connection into its own thread.
             TcpClient? client;
-            while ((client = listener.AcceptTcpClient()) != null)
-                Task.Run(() => HandleClient(client));
+            while ((client = await listener.AcceptTcpClientAsync(ct)) != null)
+                _ = HandleClient(client, ct);
         }
 
-        private void HandleClient(TcpClient client)
+        private async Task HandleClient(TcpClient client, CancellationToken ct)
         {
             PacketConnection connection = new PacketConnection(client);
-            ColorConsole.WriteLine(Color.Green, $"{connection.RemoteEndPoint} connected.");
+            Log(Color.Green, $"{connection.RemoteEndPoint} connected.");
+            bool loggedIn = false;
 
             try
             {
                 while (true)
                 {
-                    // Receive and log query.
-                    Packet packet = connection.Receive();
+                    // Receive packet during a valid time frame.
+                    CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    timeoutCts.CancelAfter(loggedIn ? _authorizedTimeout : _unauthorizedTimeout);
+                    Packet packet = await connection.Read(timeoutCts.Token);
+
+                    // Log packet.
                     LogPacket(connection, packet, true);
+                    if (packet.Code == PacketCode.Login)
+                        loggedIn = true;
 
                     // Queue handling of known queries.
-                    if (_packetHandlers.TryGetValue(packet.Code, out Action<PacketConnection, Packet>? handler))
-                        _jobs.Add(() => handler(connection, packet));
+                    if (_packetHandlers.TryGetValue(packet.Code, out PacketHandler? handler))
+                        await _jobs.Writer.WriteAsync(() => handler(connection, packet, ct), ct);
                     else
-                        ColorConsole.WriteLine(Color.Red, $"{connection.RemoteEndPoint} unhandled {packet.Code}.");
+                        Log(Color.Red, $"{connection.RemoteEndPoint} unhandled {packet.Code}.");
                 }
             }
             catch (Exception ex)
             {
-                ColorConsole.WriteLine(Color.Red, $"{connection.RemoteEndPoint} disconnected. {ex.Message}");
-                _jobs.Add(() => OnDisconnectUser(connection));
+                Log(Color.Red, $"{connection.RemoteEndPoint} disconnected. {ex.Message}");
+
+                ct.ThrowIfCancellationRequested();
+                await _jobs.Writer.WriteAsync(() => OnDisconnectUserAsync(connection, ct), ct);
             }
         }
 
-        private void LeaveRoom(Room? room, int leftID)
+        private async ValueTask LeaveRoom(Room? room, int leftID, CancellationToken ct)
         {
             // Close an abandoned room.
             bool roomClosed = room != null
@@ -143,19 +165,19 @@ namespace Syroot.Worms.Worms2.GameServer
                 // Notify room leave, if any.
                 if (room != null)
                 {
-                    SendPacket(user.Connection, new Packet(PacketCode.Leave,
+                    await SendPacket(user.Connection, ct, new Packet(PacketCode.Leave,
                         value2: room.ID,
                         value10: leftID));
                 }
                 // Notify room close, if any.
                 if (roomClosed)
-                    SendPacket(user.Connection, new Packet(PacketCode.Close, value10: room!.ID));
+                    await SendPacket(user.Connection, ct, new Packet(PacketCode.Close, value10: room!.ID));
             }
         }
 
         // ---- Handlers ----
 
-        private void OnListRooms(PacketConnection connection, Packet packet)
+        private async ValueTask OnListRooms(PacketConnection connection, Packet packet, CancellationToken ct)
         {
             User? fromUser = GetUser(connection);
             if (fromUser == null || packet.Value4 != 0)
@@ -163,16 +185,16 @@ namespace Syroot.Worms.Worms2.GameServer
 
             foreach (Room room in _rooms)
             {
-                SendPacket(connection, new Packet(PacketCode.ListItem,
+                await SendPacket(connection, ct, new Packet(PacketCode.ListItem,
                     value1: room.ID,
                     data: String.Empty, // do not report creator IP
                     name: room.Name,
                     session: room.Session));
             }
-            SendPacket(connection, new Packet(PacketCode.ListEnd));
+            await SendPacket(connection, ct, new Packet(PacketCode.ListEnd));
         }
 
-        private void OnListUsers(PacketConnection connection, Packet packet)
+        private async ValueTask OnListUsers(PacketConnection connection, Packet packet, CancellationToken ct)
         {
             User? fromUser = GetUser(connection);
             if (fromUser == null || packet.Value2 != fromUser.RoomID || packet.Value4 != 0)
@@ -180,15 +202,15 @@ namespace Syroot.Worms.Worms2.GameServer
 
             foreach (User user in _users.Where(x => x.RoomID == fromUser.RoomID)) // notably includes the user itself
             {
-                SendPacket(connection, new Packet(PacketCode.ListItem,
+                await SendPacket(connection, ct, new Packet(PacketCode.ListItem,
                     value1: user.ID,
                     name: user.Name,
                     session: user.Session));
             }
-            SendPacket(connection, new Packet(PacketCode.ListEnd));
+            await SendPacket(connection, ct, new Packet(PacketCode.ListEnd));
         }
 
-        private void OnListGames(PacketConnection connection, Packet packet)
+        private async ValueTask OnListGames(PacketConnection connection, Packet packet, CancellationToken ct)
         {
             User? fromUser = GetUser(connection);
             if (fromUser == null || packet.Value2 != fromUser.RoomID || packet.Value4 != 0)
@@ -196,16 +218,16 @@ namespace Syroot.Worms.Worms2.GameServer
 
             foreach (Game game in _games.Where(x => x.RoomID == fromUser.RoomID))
             {
-                SendPacket(connection, new Packet(PacketCode.ListItem,
+                await SendPacket(connection, ct, new Packet(PacketCode.ListItem,
                     value1: game.ID,
                     data: game.IPAddress.ToString(),
                     name: game.Name,
                     session: game.Session));
             }
-            SendPacket(connection, new Packet(PacketCode.ListEnd));
+            await SendPacket(connection, ct, new Packet(PacketCode.ListEnd));
         }
 
-        private void OnLogin(PacketConnection connection, Packet packet)
+        private async ValueTask OnLogin(PacketConnection connection, Packet packet, CancellationToken ct)
         {
             if (packet.Value1 == null || packet.Value4 == null || packet.Name == null || packet.Session == null)
                 return;
@@ -213,7 +235,7 @@ namespace Syroot.Worms.Worms2.GameServer
             // Check if user name is valid and not already taken.
             if (_users.Any(x => x.Name.Equals(packet.Name, StringComparison.InvariantCultureIgnoreCase)))
             {
-                SendPacket(connection, new Packet(PacketCode.LoginReply, value1: 0, error: 1));
+                await SendPacket(connection, ct, new Packet(PacketCode.LoginReply, value1: 0, error: 1));
             }
             else
             {
@@ -222,20 +244,17 @@ namespace Syroot.Worms.Worms2.GameServer
                 // Notify other users about new user.
                 foreach (User user in _users)
                 {
-                    SendPacket(user.Connection, new Packet(PacketCode.Login,
-                        value1: newUser.ID,
-                        value4: 0,
-                        name: newUser.Name,
-                        session: newUser.Session));
+                    await SendPacket(user.Connection, ct, new Packet(PacketCode.Login,
+                        value1: newUser.ID, value4: 0, name: newUser.Name, session: newUser.Session));
                 }
 
                 // Register new user and send reply to him.
                 _users.Add(newUser);
-                SendPacket(connection, new Packet(PacketCode.LoginReply, value1: newUser.ID, error: 0));
+                await SendPacket(connection, ct, new Packet(PacketCode.LoginReply, value1: newUser.ID, error: 0));
             }
         }
 
-        private void OnCreateRoom(PacketConnection connection, Packet packet)
+        private async ValueTask OnCreateRoom(PacketConnection connection, Packet packet, CancellationToken ct)
         {
             User? fromUser = GetUser(connection);
             if (fromUser == null || packet.Value1 != 0 || packet.Value4 != 0 || packet.Data == null
@@ -252,7 +271,7 @@ namespace Syroot.Worms.Worms2.GameServer
                 // Notify other users about new room.
                 foreach (User user in _users.Where(x => x != fromUser))
                 {
-                    SendPacket(user.Connection, new Packet(PacketCode.CreateRoom,
+                    await SendPacket(user.Connection, ct, new Packet(PacketCode.CreateRoom,
                         value1: newRoom.ID,
                         value4: 0,
                         data: String.Empty, // do not report creator IP
@@ -261,19 +280,15 @@ namespace Syroot.Worms.Worms2.GameServer
                 }
 
                 // Send reply to creator.
-                SendPacket(connection, new Packet(PacketCode.CreateRoomReply,
-                    value1: newRoom.ID,
-                    error: 0));
+                await SendPacket(connection, ct, new Packet(PacketCode.CreateRoomReply, value1: newRoom.ID, error: 0));
             }
             else
             {
-                SendPacket(connection, new Packet(PacketCode.CreateRoomReply,
-                    value1: 0,
-                    error: 1));
+                await SendPacket(connection, ct, new Packet(PacketCode.CreateRoomReply, value1: 0, error: 1));
             }
         }
 
-        private void OnJoin(PacketConnection connection, Packet packet)
+        private async ValueTask OnJoin(PacketConnection connection, Packet packet, CancellationToken ct)
         {
             User? fromUser = GetUser(connection);
             if (fromUser == null || packet.Value2 == null || packet.Value10 != fromUser.ID)
@@ -287,34 +302,34 @@ namespace Syroot.Worms.Worms2.GameServer
                 // Notify other users about the join.
                 foreach (User user in _users.Where(x => x != fromUser))
                 {
-                    SendPacket(user.Connection, new Packet(PacketCode.Join,
+                    await SendPacket(user.Connection, ct, new Packet(PacketCode.Join,
                         value2: fromUser.RoomID,
                         value10: fromUser.ID));
                 }
 
                 // Send reply to joiner.
-                SendPacket(connection, new Packet(PacketCode.JoinReply, error: 0));
+                await SendPacket(connection, ct, new Packet(PacketCode.JoinReply, error: 0));
             }
             else if (_games.Any(x => x.ID == packet.Value2 && x.RoomID == fromUser.RoomID))
             {
                 // Notify other users about the join.
                 foreach (User user in _users.Where(x => x != fromUser))
                 {
-                    SendPacket(user.Connection, new Packet(PacketCode.Join,
+                    await SendPacket(user.Connection, ct, new Packet(PacketCode.Join,
                         value2: fromUser.RoomID,
                         value10: fromUser.ID));
                 }
 
                 // Send reply to joiner.
-                SendPacket(connection, new Packet(PacketCode.JoinReply, error: 0));
+                await SendPacket(connection, ct, new Packet(PacketCode.JoinReply, error: 0));
             }
             else
             {
-                SendPacket(connection, new Packet(PacketCode.JoinReply, error: 1));
+                await SendPacket(connection, ct, new Packet(PacketCode.JoinReply, error: 1));
             }
         }
 
-        private void OnLeave(PacketConnection connection, Packet packet)
+        private async ValueTask OnLeave(PacketConnection connection, Packet packet, CancellationToken ct)
         {
             User? fromUser = GetUser(connection);
             if (fromUser == null || packet.Value2 == null || packet.Value10 != fromUser.ID)
@@ -323,20 +338,20 @@ namespace Syroot.Worms.Worms2.GameServer
             // Require valid room ID (never sent for games, users disconnect if leaving a game).
             if (packet.Value2 == fromUser.RoomID)
             {
-                LeaveRoom(_rooms.FirstOrDefault(x => x.ID == fromUser.RoomID), fromUser.ID);
+                await LeaveRoom(_rooms.FirstOrDefault(x => x.ID == fromUser.RoomID), fromUser.ID, ct);
                 fromUser.RoomID = 0;
 
                 // Reply to leaver.
-                SendPacket(connection, new Packet(PacketCode.LeaveReply, error: 0));
+                await SendPacket(connection, ct, new Packet(PacketCode.LeaveReply, error: 0));
             }
             else
             {
                 // Reply to leaver.
-                SendPacket(connection, new Packet(PacketCode.LeaveReply, error: 1));
+                await SendPacket(connection, ct, new Packet(PacketCode.LeaveReply, error: 1));
             }
         }
 
-        private void OnDisconnectUser(PacketConnection connection)
+        private async ValueTask OnDisconnectUserAsync(PacketConnection connection, CancellationToken ct)
         {
             User? fromUser = GetUser(connection);
             if (fromUser == null)
@@ -356,23 +371,22 @@ namespace Syroot.Worms.Worms2.GameServer
                 // Notify other users.
                 foreach (User user in _users.Where(x => x != fromUser))
                 {
-                    SendPacket(user.Connection, new Packet(PacketCode.Leave, value2: game.ID, value10: fromUser.ID));
-                    SendPacket(user.Connection, new Packet(PacketCode.Close, value10: game.ID));
+                    await SendPacket(user.Connection, ct, new Packet(PacketCode.Leave,
+                        value2: game.ID, value10: fromUser.ID));
+                    await SendPacket(user.Connection, ct, new Packet(PacketCode.Close,
+                        value10: game.ID));
                 }
             }
 
             // Close any abandoned room.
-            LeaveRoom(_rooms.FirstOrDefault(x => x.ID == roomID), leftID);
+            await LeaveRoom(_rooms.FirstOrDefault(x => x.ID == roomID), leftID, ct);
 
             // Notify user disconnect.
             foreach (User user in _users)
-            {
-                SendPacket(user.Connection, new Packet(PacketCode.DisconnectUser,
-                    value10: fromUser.ID));
-            }
+                await SendPacket(user.Connection, ct, new Packet(PacketCode.DisconnectUser, value10: fromUser.ID));
         }
 
-        private void OnClose(PacketConnection connection, Packet packet)
+        private async ValueTask OnClose(PacketConnection connection, Packet packet, CancellationToken ct)
         {
             User? fromUser = GetUser(connection);
             if (fromUser == null || packet.Value10 == null)
@@ -380,10 +394,10 @@ namespace Syroot.Worms.Worms2.GameServer
 
             // Never sent for games, users disconnect if leaving a game.
             // Simply reply success to client, the server decides when to actually close rooms.
-            SendPacket(connection, new Packet(PacketCode.CloseReply, error: 0));
+            await SendPacket(connection, ct, new Packet(PacketCode.CloseReply, error: 0));
         }
 
-        private void OnCreateGame(PacketConnection connection, Packet packet)
+        private async ValueTask OnCreateGame(PacketConnection connection, Packet packet, CancellationToken ct)
         {
             User? fromUser = GetUser(connection);
             if (fromUser == null || packet.Value1 != 0 || packet.Value2 != fromUser.RoomID || packet.Value4 != 0x800
@@ -391,7 +405,7 @@ namespace Syroot.Worms.Worms2.GameServer
                 return;
 
             // Require valid room ID and IP.
-            if (IPAddress.TryParse(packet.Data, out IPAddress ip) && connection.RemoteEndPoint.Address.Equals(ip))
+            if (IPAddress.TryParse(packet.Data, out IPAddress? ip) && connection.RemoteEndPoint.Address.Equals(ip))
             {
                 Game newGame = new Game(++_lastID, fromUser.Name, fromUser.Session.Nation, fromUser.RoomID,
                     connection.RemoteEndPoint.Address, // do not use bad NAT IP reported by users here
@@ -401,7 +415,7 @@ namespace Syroot.Worms.Worms2.GameServer
                 // Notify other users about new game, even those in other rooms.
                 foreach (User user in _users.Where(x => x != fromUser))
                 {
-                    SendPacket(user.Connection, new Packet(PacketCode.CreateGame,
+                    await SendPacket(user.Connection, ct, new Packet(PacketCode.CreateGame,
                         value1: newGame.ID,
                         value2: newGame.RoomID,
                         value4: 0x800,
@@ -411,20 +425,19 @@ namespace Syroot.Worms.Worms2.GameServer
                 }
 
                 // Send reply to host.
-                SendPacket(connection, new Packet(PacketCode.CreateGameReply, value1: newGame.ID, error: 0));
+                await SendPacket(connection, ct, new Packet(PacketCode.CreateGameReply, value1: newGame.ID, error: 0));
             }
             else
             {
-                SendPacket(connection, new Packet(PacketCode.CreateGameReply, value1: 0, error: 2));
-                SendPacket(connection, new Packet(PacketCode.ChatRoom,
+                await SendPacket(connection, ct, new Packet(PacketCode.CreateGameReply, value1: 0, error: 2));
+                await SendPacket(connection, ct, new Packet(PacketCode.ChatRoom,
                     value0: fromUser.ID,
                     value3: fromUser.RoomID,
-                    data: $"GRP:Cannot host your game. Please use Worms 2 Plus and check your configuration. More information at "
-                + "worms2.highog.com"));
+                    data: $"GRP:Cannot host your game."));
             }
         }
 
-        private void OnChatRoom(PacketConnection connection, Packet packet)
+        private async ValueTask OnChatRoom(PacketConnection connection, Packet packet, CancellationToken ct)
         {
             User? fromUser = GetUser(connection);
             if (fromUser == null || packet.Value0 != fromUser.ID || packet.Value3 == null || packet.Data == null)
@@ -441,17 +454,17 @@ namespace Syroot.Worms.Worms2.GameServer
                     string message = packet.Data.Substring(prefix.Length);
                     foreach (User user in _users.Where(x => x.RoomID == fromUser.RoomID && x != fromUser))
                     {
-                        SendPacket(user.Connection, new Packet(PacketCode.ChatRoom,
+                        await SendPacket(user.Connection, ct, new Packet(PacketCode.ChatRoom,
                             value0: fromUser.ID,
                             value3: user.RoomID,
                             data: prefix + message));
                     }
                     // Notify sender.
-                    SendPacket(connection, new Packet(PacketCode.ChatRoomReply, error: 0));
+                    await SendPacket(connection, ct, new Packet(PacketCode.ChatRoomReply, error: 0));
                 }
                 else
                 {
-                    SendPacket(connection, new Packet(PacketCode.ChatRoomReply, error: 1));
+                    await SendPacket(connection, ct, new Packet(PacketCode.ChatRoomReply, error: 1));
                 }
             }
             else if (packet.Data.StartsWith(prefix = $"PRV:[ {fromUser.Name} ]  ", StringComparison.InvariantCulture))
@@ -460,23 +473,23 @@ namespace Syroot.Worms.Worms2.GameServer
                 User? user = _users.FirstOrDefault(x => x.RoomID == fromUser.RoomID && x.ID == targetID);
                 if (user == null)
                 {
-                    SendPacket(connection, new Packet(PacketCode.ChatRoomReply, error: 1));
+                    await SendPacket(connection, ct, new Packet(PacketCode.ChatRoomReply, error: 1));
                 }
                 else
                 {
                     // Notify receiver of the message.
                     string message = packet.Data.Substring(prefix.Length);
-                    SendPacket(user.Connection, new Packet(PacketCode.ChatRoom,
+                    await SendPacket(user.Connection, ct, new Packet(PacketCode.ChatRoom,
                         value0: fromUser.ID,
                         value3: user.ID,
                         data: prefix + message));
                     // Notify sender.
-                    SendPacket(connection, new Packet(PacketCode.ChatRoomReply, error: 0));
+                    await SendPacket(connection, ct, new Packet(PacketCode.ChatRoomReply, error: 0));
                 }
             }
         }
 
-        private void OnConnectGame(PacketConnection connection, Packet packet)
+        private async ValueTask OnConnectGame(PacketConnection connection, Packet packet, CancellationToken ct)
         {
             User? fromUser = GetUser(connection);
             if (fromUser == null || packet.Value0 == null)
@@ -486,16 +499,20 @@ namespace Syroot.Worms.Worms2.GameServer
             Game? game = _games.FirstOrDefault(x => x.ID == packet.Value0 && x.RoomID == fromUser.RoomID);
             if (game == null)
             {
-                SendPacket(connection, new Packet(PacketCode.ConnectGameReply,
+                await SendPacket(connection, ct, new Packet(PacketCode.ConnectGameReply,
                     data: String.Empty,
                     error: 1));
             }
             else
             {
-                SendPacket(connection, new Packet(PacketCode.ConnectGameReply,
+                await SendPacket(connection, ct, new Packet(PacketCode.ConnectGameReply,
                     data: game.IPAddress.ToString(),
                     error: 0));
             }
         }
+
+        // ---- CLASSES, STRUCTS & ENUMS -------------------------------------------------------------------------------
+
+        private delegate ValueTask PacketHandler(PacketConnection connection, Packet packet, CancellationToken ct);
     }
 }

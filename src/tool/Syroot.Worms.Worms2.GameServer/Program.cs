@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Net;
+using System.Threading.Tasks;
 
 namespace Syroot.Worms.Worms2.GameServer
 {
@@ -10,21 +11,23 @@ namespace Syroot.Worms.Worms2.GameServer
     {
         // ---- METHODS (PRIVATE) --------------------------------------------------------------------------------------
 
-        private static void Main(string[] args)
+        private static async Task Main(string[] args)
         {
             string? argEndPoint = args.Length > 0 ? args[0] : null;
 
             Server server = new Server();
-            server.Run(ParseEndPoint(argEndPoint, new IPEndPoint(IPAddress.Any, 17000)));
+            await server.Run(ParseEndPoint(argEndPoint, new IPEndPoint(IPAddress.Any, 17000)));
 
-            //Proxy.Run(ParseEndPoint(argEndPoint, new IPEndPoint(IPAddress.Any, 17001)));
+            //await Proxy.Run(ParseEndPoint(argEndPoint, new IPEndPoint(IPAddress.Any, 17001)));
         }
 
         private static IPEndPoint ParseEndPoint(string? s, IPEndPoint fallback)
         {
-            if (UInt16.TryParse(s, out ushort port))
+            if (s == null)
+                return fallback;
+            else if (UInt16.TryParse(s, out ushort port))
                 return new IPEndPoint(fallback.Address, port);
-            else if (IPEndPoint.TryParse(s, out IPEndPoint endPoint))
+            else if (IPEndPoint.TryParse(s, out IPEndPoint? endPoint))
                 return endPoint;
             else
                 return fallback;

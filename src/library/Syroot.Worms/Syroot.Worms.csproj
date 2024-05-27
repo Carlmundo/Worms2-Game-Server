@@ -1,21 +1,22 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
-  <Import Project="$(SolutionDir)build.xml" />
+  <Import Project="$(MSBuildThisFileDirectory)..\..\build.xml" />
   
   <!-- Metadata -->
   <PropertyGroup>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Description>.NET library for loading and modifying files of Team17 Worms games.</Description>
-    <PackageReleaseNotes>Overhaul implementation and documentation.</PackageReleaseNotes>
-    <Version>4.0.0</Version>
+    <PackageReleaseNotes>Fix StackOverflowException when using legacy .NET versions.</PackageReleaseNotes>
+    <Version>4.0.3</Version>
   </PropertyGroup>
   
   <!-- References -->
   <ItemGroup>
-    <PackageReference Include="Syroot.BinaryData" Version="5.2.1" />
-    <PackageReference Include="System.Drawing.Common" Version="4.5.0" />
+    <PackageReference Include="Syroot.BinaryData" Version="5.2.2" />
+    <PackageReference Include="System.Drawing.Common" Version="4.7.3" />
   </ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)'=='netstandard2.0'">
-    <PackageReference Include="Microsoft.Bcl.HashCode" Version="1.0.0" />
+    <PackageReference Include="Microsoft.Bcl.HashCode" Version="1.1.1" />
+    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.5.4" />
   </ItemGroup>
-  
+
 </Project>
