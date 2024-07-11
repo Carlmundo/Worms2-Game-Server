@@ -1,3 +1,3 @@
 - See Releases for a build
-- To start the server, open up port 17000 and run `w2server.exe`, or the `_Start Server.bat` file (included in Release only). 
+- To start the server, open up port 17000 and run `w2server.exe`.
 - To compile, build in Visual Studio and the files will be found in: `src\tool\Syroot.Worms.Worms2.GameServer\bin`
