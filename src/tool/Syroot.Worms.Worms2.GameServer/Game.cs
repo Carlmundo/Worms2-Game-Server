@@ -16,14 +16,14 @@ namespace Syroot.Worms.Worms2.GameServer
         /// <param name="name">The name of the room being the name of the creator.</param>
         /// <param name="nation">The flag displayed with the game.</param>
         /// <param name="roomID">The ID of the room the game is hosted in.</param>
-        /// <param name="ipAddress">The IP address of the host of the game.</param>
+        /// <param name="gameId">The Worm2NAT ID of the game or IP address of the host player.</param>
         /// <param name="access">The access modifier of the game.</param>
-        internal Game(int id, string name, Nation nation, int roomID, IPAddress ipAddress, SessionAccess access)
+        internal Game(int id, string name, Nation nation, int roomID, string gameId, SessionAccess access)
         {
             ID = id;
             Name = name;
             RoomID = roomID;
-            IPAddress = ipAddress;
+            GameID = gameId;
             Session = new SessionInfo(nation, SessionType.Game, access);
         }
 
@@ -45,9 +45,9 @@ namespace Syroot.Worms.Worms2.GameServer
         internal int RoomID { get; }
 
         /// <summary>
-        /// Gets the IP address of the host of the game.
+        /// Gets either the IP address of the host of the game or the Worm2NAT game ID.
         /// </summary>
-        internal IPAddress IPAddress { get; set; }
+        internal string GameID { get; set; }
 
         /// <summary>
         /// Gets the <see cref="SessionInfo"/> describing the game.

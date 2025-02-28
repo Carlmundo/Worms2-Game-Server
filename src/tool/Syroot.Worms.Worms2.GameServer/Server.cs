@@ -220,7 +220,7 @@ namespace Syroot.Worms.Worms2.GameServer
             {
                 await SendPacket(connection, ct, new Packet(PacketCode.ListItem,
                     value1: game.ID,
-                    data: game.IPAddress.ToString(),
+                    data: game.GameID,
                     name: game.Name,
                     session: game.Session));
             }
@@ -404,11 +404,11 @@ namespace Syroot.Worms.Worms2.GameServer
                 || packet.Data == null || packet.Name == null || packet.Session == null)
                 return;
 
-            // Require valid room ID and IP.
-            if (IPAddress.TryParse(packet.Data, out IPAddress? ip) && connection.RemoteEndPoint.Address.Equals(ip))
+            // Require valid room ID and game ID.
+            if(!string.IsNullOrWhiteSpace(packet.Data))
             {
                 Game newGame = new Game(++_lastID, fromUser.Name, fromUser.Session.Nation, fromUser.RoomID,
-                    connection.RemoteEndPoint.Address, // do not use bad NAT IP reported by users here
+                    packet.Data, // do not use bad NAT IP reported by users here
                     packet.Session.Value.Access);
                 _games.Add(newGame);
 
@@ -419,7 +419,7 @@ namespace Syroot.Worms.Worms2.GameServer
                         value1: newGame.ID,
                         value2: newGame.RoomID,
                         value4: 0x800,
-                        data: newGame.IPAddress.ToString(),
+                        data: newGame.GameID,
                         name: newGame.Name,
                         session: newGame.Session));
                 }
@@ -506,7 +506,7 @@ namespace Syroot.Worms.Worms2.GameServer
             else
             {
                 await SendPacket(connection, ct, new Packet(PacketCode.ConnectGameReply,
-                    data: game.IPAddress.ToString(),
+                    data: game.GameID,
                     error: 0));
             }
         }
